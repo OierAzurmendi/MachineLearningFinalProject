@@ -1,0 +1,763 @@
+---
+title: "TRABAJO FINAL: INTERPRETACIÓN DE DATOS DE UNA ENCUESTA SOBRE MIOPÍA"
+author: "Oier Azurmendi, Maite Telletxea, Sergio Peñas"
+date: "9/3/2022"
+output: html_document
+---
+Para este trabajo se parte de dos dataframes (X_train y Y_train). Poseen 49 y 4 variables, respectivamente. 
+
+Se trata de realizar un programa en el cual a partir de los datos de X_train (incomes) y de Y_train (outcomes) se puedan realizar predecicciones sobre los outputs. Es decir, hay que modelar las cuatro categorías del Y_train. Se preparará una función la cual recibirá un valor x con variables predictoras y un valor y. Finalmente, a partir de un X_test (lo que se debe predecir) se comprobará la robustez de los modelos con un Y_test.
+
+*Cargar librerías y paquetes necesarios:*
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(cowplot)
+library(PerformanceAnalytics)
+library(psych)
+library(GGally)
+library(Boruta)
+library(caret)
+library(Metrics)
+library(randomForest)
+```
+
+*Cargar datos:*
+
+Se cargan los dos dataframes con los que se va a trabajar.
+
+```{r}
+X_train <- read_csv("X_train.csv")
+Y_train <- read_csv("Y_train.csv")
+```
+*EDA: análisis exploratorio de los datos*
+
+Sirve para echar un primer vistazo a los datos, del tipo de variables que poseen los dataframes, y de comprobar la existencia de datos faltantes (NAs). En este punto, se realizará por tanto un primer tratamiento de los datos, se corregirán los NAs y se normalizarán y escalarán las variables necesarias.
+
+Primero se va a analizar el dataframe Y_train (variables dependientes), que consta de 4 variables:
+
+  - M: si el encuestado es miope o no (SÍ/NO)
+  - MM: si el encuestado es miope magno o no (SÍ/NO)
+  - Combo: si el encuestado es miope, miope magno o control (M, MM, C)
+  - DCombo: si el encuestado es miope (dos tipos), miope magno o control (M1, M2, MM, C)
+
+```{r}
+# Explorar variables dependientes
+str(Y_train)
+```
+Se pasan los datos de Y_train a factores para su correcto tratamiento.
+
+```{r}
+Y_train <- as.data.frame(lapply(Y_train, as.factor))
+summary(Y_train)
+```
+Se echa un vistazo a los diferentes niveles que tiene cada variable del dataframe.
+
+```{r}
+str(Y_train)
+```
+En el siguiente punto, se comprueba la existencia de NAs en Y_train (en este caso no hay ninguno).
+
+```{r}
+# Explorar variables dependientes
+sapply(Y_train,function(x){sum(is.na(x))})
+
+head(Y_train)
+```
+A continuación, se hace un barplot de Y_train, para comprobar como está distribuida cada variable (la frecuencia de cada uno de los diferentes niveles). Vemos, por ejemplo, una enorme diferencia en la variable MM.
+
+```{r}
+y1 <- ggplot(Y_train, aes(x=M)) +
+  geom_bar()+
+  theme_minimal()+
+  ggtitle('M')
+
+y2 <- ggplot(Y_train, aes(x=MM)) +
+  geom_bar()+
+  theme_minimal()+
+  ggtitle('MM')
+
+y3 <- ggplot(Y_train, aes(x=Combo)) +
+  geom_bar()+
+  theme_minimal()+
+  ggtitle('Combo')
+
+y4 <- ggplot(Y_train, aes(x=DCombo)) +
+  geom_bar()+
+  theme_minimal()+
+  ggtitle('DCombo')
+
+plot_grid(y1, y2, y3, y4, labels = c('AUTO'), nrow=2, ncol=2)
+```
+Después, se procede a analizar el dataframe X_train (variables independientes). Tras un primer vistazo, se decide eliminar la primera columna del dataframe (fecha), al no considerarla una variable relevante.
+
+```{r}
+# Explorar variables independientes
+features <- X_train[-1]
+str(features)
+```
+Se crea el dataframe 'features' tras haber eliminado el atributo de cada clase, y se comprueba la disposición de los nuevos datos.
+
+```{r}
+features <- as.data.frame(unclass(features), stringsAsFactors = TRUE)
+
+summary(features)
+```
+
+```{r}
+str(features)
+```
+Ahora se comprueba la existencia de NAs en X_train. Se calculan los porcentajes de NAs por variable y se visualiza mediante un barplot.
+
+Se decide no tener en cuenta las 6 variables que más porcentaje de NAs poseen ('hº.act.cerca.sem', 'origen.antepasados..extranjeros'., 'hº.act.cerca.sem', 'Grupo.fot', 'fototipo', 'origen.antepasados..españa.').
+
+A continuación, se distingue entre los NAs de las variables numéricas y de las categóricas. Los NAs de las variables numéricas se sustituirán por la media de los datos para esa variable, y los NAs de las categóricas se reemplazarán por la categoría 'NoData'.
+
+```{r}
+NAs <- sapply(features,function(x){(sum(is.na(x))/nrow(features))*100})
+var_NAs <- NAs[NAs != 0]
+var_NAs
+
+X_train2 <- features%>% 
+  gather(key = "variable", value = "valor")
+map_dbl(features, .f = function(x){sum(is.na(x))})
+X_train2%>%
+  group_by(variable) %>% 
+  summarize(porcentaje_NA = 100 * sum(is.na(valor)) / length(valor)) %>%
+  ggplot(aes(x = reorder(variable, desc(porcentaje_NA)), y = porcentaje_NA)) +
+  geom_col() +
+  labs(title = "Porcentaje valores ausentes por variable",
+       x = "Variable", y = "Porcentaje NAs") +
+  theme_bw()
+
+features <- features %>% select(-c(hº.act.cerca.sem, origen.antepasados..extranjeros., hº.act.cerca.sem, Grupo.fot, fototipo, origen.antepasados..españa.))
+
+NAs <- sapply(features,function(x){(sum(is.na(x))/nrow(features))*100})
+var_NAs <- NAs[NAs != 0]
+var_NAs
+
+num_NAs <- names(which(sapply(features[,which(NAs != 0)], is.numeric)))
+cat_NAs <- names(which(sapply(features[,which(NAs != 0)], is.factor)))
+
+# Imputar missing values para variables numéricas
+for (vnum in num_NAs){
+  features[[vnum]][is.na(features[[vnum]])] <- median(features[[vnum]],na.rm = TRUE)
+}
+
+# Añadir categoría NoData para las variables categóricas con missing values
+for (vcat in cat_NAs){
+  levels(features[[vcat]]) <- c(levels(features[[vcat]]), "NoData")
+  features[[vcat]][which(is.na(features[[vcat]]))] <- "NoData"
+}
+
+NAs <- sapply(features,function(x){(sum(is.na(x))/nrow(features))*100})
+var_NAs <- NAs[NAs != 0]
+var_NAs
+
+head(features)
+```
+Una vez se tienen los datos limpios de NAs, se realiza un gráfico de correlación de todas las variables numéricas entre sí.
+
+```{r}
+chart.Correlation(features[, sapply(features, is.numeric)], histogram = TRUE)
+numericas<-features%>%
+  select_if(is.numeric)
+round(cor(x = numericas, method = "pearson"), 3)
+
+```
+En la siguiente parte, se realiza un histograma de cada variable numérica para ver su distribución.
+
+```{r}
+multi.hist(x = numericas, dcol = c("blue", "red"), dlty = c("dotted", "solid"),
+           main = colnames(numericas))
+```
+Se realiza un escalado de las variables numéricas, y se realiza el test de Shapiro para evaluar la normalidad de cada una de ellas. Después, se determina un umbral para el p-valor (0.05): si el p-valor es mayor que 0.05 no tengo evidencias para decir que la variable no sigue una distribución normal.
+
+Finalmente, con la función 'normalize' se transforman las variables excesivamente sesgadas.
+
+```{r}
+# Escalar variables numéricas
+numericas[-10] <- scale(numericas[-10])
+
+# Normalidad: shapiro test para todas las variables numéricas continuas
+norm <- sapply(numericas[-c(1,10)], function(x){shapiro.test(x)$p.value})
+
+# Determinamos un umbral para el p-valor
+sesgadas <- norm[norm < 0.05]
+
+# Función normalize
+normalize <- function(x){
+  (x - min(x)) / (max(x) - min(x))}
+
+# Tranformamos las variables excesivamente sesgadas
+for(n in names(sesgadas)){
+  numericas[[n]] <- normalize(numericas[[n]])
+}
+
+multi.hist(x = numericas, dcol = c("blue", "red"), dlty = c("dotted", "solid"),
+           main = colnames(numericas))
+```
+Se hace una representación de cada variable numérica frente a la primera variable del Y_train (del outcome), 'M'.
+
+```{r}
+numericas_long <- numericas %>%
+  pivot_longer(names_to = "variable",
+               values_to = "value",
+               cols = 1:32)
+
+duptimes <- c(rep(ncol(numericas),132))
+idx <- rep(1:nrow(Y_train), duptimes)
+target <- Y_train[idx,]
+
+numericas_long_target <- cbind(numericas_long, target)
+
+numericas_long_target %>% 
+  ggplot(aes(x=M, y=value))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_point(shape = ".", position = "jitter", alpha = 0.1) +
+  facet_wrap(~ variable) +
+  theme_minimal()
+```
+Se hace una representación de cada variable numérica frente a la segunda variable del Y_train (del outcome), 'MM'.
+
+```{r}
+numericas_long_target %>% 
+  ggplot(aes(x=MM, y=value))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_point(shape = ".", position = "jitter", alpha = 0.1) +
+  facet_wrap(~ variable) +
+  theme_minimal()
+```
+
+Se hace una representación de cada variable numérica frente a la primera variable del Y_train (outcome), 'Combo'.
+
+```{r}
+numericas_long_target %>% 
+  ggplot(aes(x=Combo, y=value))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_point(shape = ".", position = "jitter", alpha = 0.1) +
+  facet_wrap(~ variable) +
+  theme_minimal()
+```
+
+Se hace una representación de cada variable numérica frente a la primera variable del Y_train (del outcome), 'DCombo'.
+
+```{r}
+numericas_long_target %>% 
+  ggplot(aes(x=DCombo, y=value))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_point(shape = ".", position = "jitter", alpha = 0.1) +
+  facet_wrap(~ variable) +
+  theme_minimal()
+```
+Parece que alguna de las variables numéricas puede seguir una tendencia lineal.
+
+
+A continuación, se trabaja con las variables categóricas. Al tratarse Y_train de un dataframe  de variables también categóricas, se ve necesaria la realización de test chi-cuadrado para comparar las variables categóricas con cada una de las variables de Y_train. Se crea una lista para cada variable de Y_train con los p-valores obtenidos al realizar este test, y después para cada uno de ellos se crea un vector que guarda los p-valores significativos (<0.2), con el nombre de la respectiva income. 
+```{r}
+categoricas <- features %>%
+  select_if(is.factor)
+categoricas_target <- cbind(categoricas, Y_train)
+
+lista_chicuadrado_pvalues_m <- list()
+par(mfrow=c(3,4))
+for (cat in names(categoricas)){
+    tabla <- table(categoricas_target[[cat]],categoricas_target$M)
+    plot(tabla, col = c("red", "blue"), main = paste0(cat," vs. Miopía"))
+    lista_chicuadrado_pvalues_m[[cat]] <- chisq.test(tabla)$p.value
+}
+chicuadrado_pvalues_m <- lista_chicuadrado_pvalues_m
+
+var_significativa_m <- sapply(lista_chicuadrado_pvalues_m, function(x){x<0.2})
+var_significativa_m <- names(var_significativa_m)[which(var_significativa_m)]
+var_significativa_m
+
+lista_chicuadrado_pvalues_mm <- list()
+par(mfrow=c(3,4))
+for (cat in names(categoricas)){
+    tabla <- table(categoricas_target[[cat]],categoricas_target$MM)
+    plot(tabla, col = c("red", "blue"), main = paste0(cat," vs. Miopía Magna"))
+    lista_chicuadrado_pvalues_mm[[cat]] <- chisq.test(tabla)$p.value
+}
+chicuadrado_pvalues_mm <- lista_chicuadrado_pvalues_mm
+
+var_significativa_mm <- sapply(lista_chicuadrado_pvalues_mm, function(x){x<0.2})
+var_significativa_mm <- names(var_significativa_mm)[which(var_significativa_mm)]
+var_significativa_mm
+
+lista_chicuadrado_pvalues_combo <- list()
+par(mfrow=c(3,4))
+for (cat in names(categoricas)){
+    tabla <- table(categoricas_target[[cat]],categoricas_target$Combo)
+    plot(tabla, col = c("red", "blue"), main = paste0(cat," vs. Combo"))
+    lista_chicuadrado_pvalues_combo[[cat]] <- chisq.test(tabla)$p.value
+}
+chicuadrado_pvalues_combo <- lista_chicuadrado_pvalues_combo
+
+var_significativa_combo <- sapply(lista_chicuadrado_pvalues_combo, function(x){x<0.2})
+var_significativa_combo <- names(var_significativa_combo)[which(var_significativa_combo)]
+var_significativa_combo
+
+lista_chicuadrado_pvalues_dcombo <- list()
+par(mfrow=c(3,4))
+for (cat in names(categoricas)){
+    tabla <- table(categoricas_target[[cat]],categoricas_target$DCombo)
+    plot(tabla, col = c("red", "blue"), main = paste0(cat," vs. DCombo"))
+    lista_chicuadrado_pvalues_dcombo[[cat]] <- chisq.test(tabla)$p.value
+}
+chicuadrado_pvalues_dcombo <- lista_chicuadrado_pvalues_dcombo
+
+var_significativa_dcombo <- sapply(lista_chicuadrado_pvalues_dcombo, function(x){x<0.2})
+var_significativa_dcombo <- names(var_significativa_dcombo)[which(var_significativa_dcombo)]
+var_significativa_dcombo
+```
+
+Parece que las incomes categóricas "familiar.miope", "Familiar.MM.SI.NO", "familiar.miope.magno", "pat..Ret..Miop.magna" tienen un p-valor significativo para las 4 outcomes de Y_train.
+
+
+A continuación, se crea un dataframe que agrupe las incomes numéricas, las incomes categóricas y los outcomes.
+
+```{r}
+datos_juntos <- cbind(numericas, categoricas, Y_train)
+head(datos_juntos)
+```
+
+Creamos los dataframes para poder seleccionar las variables para el modelo de cada variable respuesta (outcomes).
+
+```{r}
+datos_juntos_M <- select(datos_juntos, -MM, -Combo,-DCombo)
+datos_juntos_MM <- select(datos_juntos, -M, -Combo,-DCombo)
+datos_juntos_Combo <- select(datos_juntos, -M, -MM,-DCombo)
+datos_juntos_DCombo <- select(datos_juntos, -M, -MM,-Combo)
+```
+
+Para Seleccionar las variables a predecir, hacemos uso del paquete 'Boruta'. Boruta es un 'feature selection algorithm' que trabaja con iteracciones, y consta de varios pasos.
+
+  - En primer lugar, añade aleatoriedad haciendo copias de todos los features (shadow features).
+  - Después entrena un clasificador 'random forest' en esos datos y hace un cálculo de la importancia     de las variables (en nuestro caso el 'Mean Decrease Accuracy').
+  - Posteriormente, comprueba si la variable real tiene mayor importancia (mayor Z score) que los        shadow features y va eliminando los que no tienen importancia. Hemos aumentado, en nuestro caso,     el número de MaxRuns, el número máximo de randomForest runs, para que el modelo pueda ajustar        mejor las variables tentativas.
+
+```{r}
+#Selección de las variables para predecir M
+Feature_Selection_M<-Boruta(datos_juntos_M$M~.,data=datos_juntos_M,maxRuns=1000)
+print(Feature_Selection_M)
+Final_Feature_Selection_M<-TentativeRoughFix(Feature_Selection_M)
+print(Final_Feature_Selection_M)
+```
+
+```{r}
+collist_M <- getSelectedAttributes(Final_Feature_Selection_M, withTentative = F)
+collist_Mbis <- c(collist_M,"M")
+features_M <- datos_juntos_M[,names(datos_juntos_M)%in%collist_Mbis]
+str(features_M)
+```
+
+```{r}
+#Selección de las variables para predecir MM
+Feature_Selection_MM<-Boruta(datos_juntos_MM$MM~.,data=datos_juntos_MM,maxRuns=1000)
+print(Feature_Selection_MM)
+Final_Feature_Selection_MM<-TentativeRoughFix(Feature_Selection_MM)
+print(Final_Feature_Selection_MM)
+```
+
+```{r}
+collist_MM <- getSelectedAttributes(Final_Feature_Selection_MM, withTentative = F)
+collist_MMbis <- c(collist_MM,"MM")
+features_MM <- datos_juntos_MM[,names(datos_juntos_MM)%in%collist_MMbis]
+str(features_MM)
+```
+
+```{r}
+#Selección de las variables para predecir Combo
+Feature_Selection_Combo<-Boruta(datos_juntos_Combo$Combo~.,data=datos_juntos_Combo,maxRuns=1000)
+print(Feature_Selection_Combo)
+Final_Feature_Selection_Combo<-TentativeRoughFix(Feature_Selection_Combo)
+print(Final_Feature_Selection_Combo)
+```
+
+```{r}
+collist_Combo <- getSelectedAttributes(Final_Feature_Selection_Combo, withTentative = F)
+collist_Combobis <- c(collist_Combo,"Combo")
+features_Combo <- datos_juntos_Combo[,names(datos_juntos_Combo)%in%collist_Combobis]
+str(features_Combo)
+```
+
+```{r}
+#Selección de las variables para predecir DCombo
+Feature_Selection_DCombo<-Boruta(datos_juntos_DCombo$DCombo~.,data=datos_juntos_DCombo,maxRuns=1000)
+print(Feature_Selection_DCombo)
+Final_Feature_Selection_DCombo<-TentativeRoughFix(Feature_Selection_DCombo)
+print(Final_Feature_Selection_DCombo)
+```
+
+```{r}
+collist_DCombo <- getSelectedAttributes(Final_Feature_Selection_DCombo, withTentative = F)
+collist_DCombobis <- c(collist_DCombo,"DCombo")
+features_DCombo <- datos_juntos_DCombo[,names(datos_juntos_DCombo)%in%collist_DCombobis]
+str(features_DCombo)
+```
+En este punto se crea una matriz train con el 75% de los datos, y otra matriz test con el 25% de los mismos.
+
+```{r}
+# Create the training/test set (75% training y 25% test)
+set.seed(1234)
+#M
+ind <- sample(1:nrow(datos_juntos),nrow(datos_juntos)*0.75)
+train_M = features_M[ind,]
+test_M = features_M[-ind,]
+#MM
+ind <- sample(1:nrow(datos_juntos),nrow(datos_juntos)*0.75)
+train_MM = features_MM[ind,]
+test_MM = features_MM[-ind,]
+#Combo
+ind <- sample(1:nrow(datos_juntos),nrow(datos_juntos)*0.75)
+train_Combo = features_Combo[ind,]
+test_Combo = features_Combo[-ind,]
+#DCombo
+ind <- sample(1:nrow(datos_juntos),nrow(datos_juntos)*0.75)
+train_DCombo = features_DCombo[ind,]
+test_DCombo = features_DCombo[-ind,]
+```
+
+```{r}
+head(train_M)
+head(test_M)
+```
+
+*MODELOS*
+
+En primer lugar, tratamos de determinar el método que se va a usar para elegir el valor óptimo de k. Para ello se usa el comando 'trainControl', con el que establecemos las condiciones del train model y la validación cruzada. En este caso, se ha fijado validación cruzada en 3 partes. Se dividen los datos en 3 submuestras del mismo tamaño. Además, para resolver desequilibrios de clase, especificamos un tipo de muestreo adicional 'up' (realiza oversampling).
+
+Como explicaremos brevemente a continuación, hemos decidido usar la métrica ROC para evaluar el rendimiento de todos nuestros modelos. Esta métrica necesita que especifiquemos una summaryFunction. En el caso de las clasificaciones binarias (variables M y MM), esta será twoClassSummary, mientras que en el caso de las clasificaciones multiclase (Combo y DCombo), la summaryFunction que hemos especificado es multiClassSummary. La fuente de esta función es: https://github.com/topepo/caret/issues/107.
+
+```{r}
+control1 <- trainControl(method="cv",
+                         number=3,
+                         search="grid",
+                         classProbs = TRUE,
+                         summaryFunction = twoClassSummary,
+                         sampling = "up")
+```
+
+```{r}
+multiClassSummary <- function (data, lev = NULL, model = NULL){
+
+  #Load Libraries
+  require(Metrics)
+  require(caret)
+
+  #Check data
+  if (!all(levels(data[, "pred"]) == levels(data[, "obs"]))) 
+    stop("levels of observed and predicted data do not match")
+
+  #Calculate custom one-vs-all stats for each class
+  prob_stats <- lapply(levels(data[, "pred"]), function(class){
+
+    #Grab one-vs-all data for the class
+    pred <- ifelse(data[, "pred"] == class, 1, 0)
+    obs  <- ifelse(data[,  "obs"] == class, 1, 0)
+    prob <- data[,class]
+
+    #Calculate one-vs-all AUC and logLoss and return
+    cap_prob <- pmin(pmax(prob, .000001), .999999)
+    prob_stats <- c(auc(obs, prob), logLoss(obs, cap_prob))
+    names(prob_stats) <- c('ROC', 'logLoss')
+    return(prob_stats) 
+  })
+  prob_stats <- do.call(rbind, prob_stats)
+  rownames(prob_stats) <- paste('Class:', levels(data[, "pred"]))
+
+  #Calculate confusion matrix-based statistics
+  CM <- confusionMatrix(data[, "pred"], data[, "obs"])
+
+  #Aggregate and average class-wise stats
+  #Todo: add weights
+  class_stats <- cbind(CM$byClass, prob_stats)
+  class_stats <- colMeans(class_stats)
+
+  #Aggregate overall stats
+  overall_stats <- c(CM$overall)
+
+  #Combine overall with class-wise stats and remove some stats we don't want 
+  stats <- c(overall_stats, class_stats)
+  stats <- stats[! names(stats) %in% c('AccuracyNull', 
+    'Prevalence', 'Detection Prevalence')]
+
+  #Clean names and return
+  names(stats) <- gsub('[[:blank:]]+', '_', names(stats))
+  return(stats)
+
+}
+```
+
+```{r}
+control2 <- trainControl(method="cv",
+                         number=3,
+                         search="grid",
+                         classProbs = TRUE,
+                         summaryFunction = multiClassSummary,
+                         sampling = "up")
+```
+
+*NEURAL NETWORKS*
+
+Primero, se utiliza el método de redes neuronales (nnet), apliacado para cada variable respuesta. Hemos decidido usar la métrica ROC como referencia para evaluar el rendimiento del modelo. La curva ROC muestra la relación entre la tasa de verdaderos positivos (TPR) y la tasa de falsos positivos (FPR) del modelo.
+
+```{r}
+#M
+nnet_model_M <-train(M~., data = train_M, metric="ROC",
+               method = "nnet", trControl = control1,
+               maxit=100,verbose=FALSE)
+```
+
+```{r}
+# Resultados M
+pred_nnet_M <- predict(nnet_model_M, test_M)
+cm_nnet_M <- confusionMatrix(pred_nnet_M, test_M$M, positive="SI")
+cm_nnet_M
+```
+
+```{r}
+#MM
+nnet_model_MM <-train(MM~., data = train_MM, metric="ROC",
+               method = "nnet", trControl = control1,
+               maxit=100,verbose=FALSE)
+```
+
+```{r}
+# Resultados MM
+pred_nnet_MM <- predict(nnet_model_MM, test_MM)
+cm_nnet_MM <- confusionMatrix(pred_nnet_MM, test_MM$MM, positive = "SI")
+cm_nnet_MM
+```
+
+```{r}
+#Combo
+nnet_model_Combo<-train(Combo~., data = train_Combo, metric="ROC",
+               method = "nnet", trControl = control2,
+               maxit=100,verbose=FALSE)
+```
+
+```{r}
+#Resultados Combo
+pred_nnet_Combo <- predict(nnet_model_Combo, test_Combo)
+cm_nnet_Combo <- confusionMatrix(pred_nnet_Combo, test_Combo$Combo)
+cm_nnet_Combo
+```
+
+```{r}
+#DCombo
+nnet_model_DCombo <-train(DCombo~., data = train_DCombo, metric="ROC",
+               method = "nnet", trControl = control2,
+               maxit=100,verbose=FALSE)  
+```
+
+```{r}
+#Resultados DCombo
+pred_nnet_DCombo <- predict(nnet_model_DCombo, test_DCombo)
+cm_nnet_DCombo <- confusionMatrix(pred_nnet_DCombo, test_DCombo$DCombo)
+cm_nnet_DCombo
+```
+
+*RANDOM FOREST*
+
+Hemos decidido aplicar también otros métodos, como el randomForest. Este algoritmo trabaja creando múltiples árboles de decisión y después combinando el outcome generado en cada uno de esos árboles. Al final, el árbol de decisión es un modelo de clasificación que obtiene información en cada nodo.
+
+```{r}
+#M
+model_rf_M <- train(M~.,
+                  train_M,
+                  method="rf",
+                  metric="ROC",
+                  trControl=control1)
+pred_rf_M <- predict(model_rf_M, test_M)
+cm_rf_M <- confusionMatrix(pred_rf_M, test_M$M, positive = "SI")
+cm_rf_M
+```
+
+```{r}
+#MM
+model_rf_MM <- train(MM~.,
+                  train_MM,
+                  method="rf",
+                  metric="ROC",
+                  trControl=control1)
+pred_rf_MM <- predict(model_rf_MM, test_MM)
+cm_rf_MM <- confusionMatrix(pred_rf_MM, test_MM$MM, positive = "SI")
+cm_rf_MM
+```
+
+```{r}
+#Combo
+model_rf_Combo <- train(Combo~.,
+                  train_Combo,
+                  method="rf",
+                  metric="ROC",
+                  trControl=control2)
+pred_rf_Combo <- predict(model_rf_Combo, test_Combo)
+cm_rf_Combo <- confusionMatrix(pred_rf_Combo, test_Combo$Combo)
+cm_rf_Combo
+```
+
+```{r}
+#DCombo
+model_rf_DCombo <- train(DCombo~.,
+                  train_DCombo,
+                  method="rf",
+                  metric="ROC",
+                  trControl=control2)
+pred_rf_DCombo <- predict(model_rf_DCombo, test_DCombo)
+cm_rf_DCombo <- confusionMatrix(pred_rf_DCombo, test_DCombo$DCombo)
+cm_rf_DCombo
+```
+
+*KNN*
+
+Por último, para cada variable respuesta también aplicamos el método de clasificación knn. Este método trata de identificar los vecinos más cercanos con respecto al k, calculando la distancia euclidea, donde k puede ser un número especificado por el usuario. Normalmente, por defecto suele ser la raíz cuadrada del número de observaciones,que se redondea a un número impar para evitar el empate de categorías. En este caso, la fase de entrenamiento simplemente sirve para guardar la información de una forma estructurada, en lugar de crear un modelo. Después, tras almacenar los datos estructurados, se obtiene un vector con la predicción de categorías que hemos hecho, y que después compararemos con las categorías reales.
+
+```{r}
+#M
+model_knn_M <- train(M~.,
+                   train_M,
+                   method="knn",
+                   metric="ROC",
+                   trControl=control1)
+pred_knn_M <- predict(model_knn_M, test_M)
+cm_knn_M <- confusionMatrix(pred_knn_M, test_M$M, positive = "SI")
+cm_knn_M
+```
+
+```{r}
+#MM
+model_knn_MM <- train(MM~.,
+                   train_MM,
+                   method="knn",
+                   metric="ROC",
+                   trControl=control1)
+pred_knn_MM <- predict(model_knn_MM, test_MM)
+cm_knn_MM <- confusionMatrix(pred_knn_MM, test_MM$MM, positive = "SI")
+cm_knn_MM
+```
+
+```{r}
+#Combo
+model_knn_Combo <- train(Combo~.,
+                   train_Combo,
+                   method="knn",
+                   metric="ROC",
+                   trControl=control2)
+pred_knn_Combo <- predict(model_knn_Combo, test_Combo)
+cm_knn_Combo <- confusionMatrix(pred_knn_Combo, test_Combo$Combo)
+cm_knn_Combo
+```
+
+```{r}
+#DCombo
+model_knn_DCombo <- train(DCombo~.,
+                   train_DCombo,
+                   method="knn",
+                   metric="ROC",
+                   trControl=control2)
+pred_knn_DCombo <- predict(model_knn_DCombo, test_DCombo)
+cm_knn_DCombo <- confusionMatrix(pred_knn_DCombo, test_DCombo$DCombo)
+cm_knn_DCombo
+```
+
+Por último, hemos tratado de comparar los diferentes modelos aplicados a los mismos datos para cada variable respuesta. En ellas, se observa, en términos generales, que el Random Forest obtiene los mejores datos en cuanto a ROC en todas las variables respuesta con respecto a redes neuronales y KNN. En la comparación, se observa que en las variables M, MM y Combo, el Knn es el segundo método que mejor funciona, pero en cambio en la Variable DCombo los resultados obtenidos bajan considerablemente. Creemos que esto ocurre debido a que esta variable respuesta contiene más opciones, por lo que le cuesta más al modelo estructurar los datos de la manera correcta. Específicamente, nuestro modelo Random Forest para la variable respuesta M obtiene un accuracy de 0.7273, con una sensibilidad de 0.68 y una especificidad de 0.78. Para la variable respuesta MM, se obtiene un accuracy de 0.9394 con una sensibilidad de 0.9688. En el caso de la variable respuesta Combo, se obtiene un accuracy de 0.75, y para DCombo un accuracy de 0.57.
+
+```{r}
+#M
+model_list <- list(RF=model_rf_M, 
+                   NNET=nnet_model_M,  
+                   KNN = model_knn_M)
+resamples <- resamples(model_list)
+bwplot(resamples, metric="ROC")
+#MM
+model_list <- list(RF=model_rf_MM, 
+                   NNET=nnet_model_MM,  
+                   KNN = model_knn_MM)
+resamples <- resamples(model_list)
+bwplot(resamples, metric="ROC")
+#Combo
+model_list <- list(RF=model_rf_Combo, 
+                   NNET=nnet_model_Combo,  
+                   KNN = model_knn_Combo)
+resamples <- resamples(model_list)
+bwplot(resamples, metric="ROC")
+#DCombo
+model_list <- list(RF=model_rf_DCombo, 
+                   NNET=nnet_model_DCombo,  
+                   KNN = model_knn_DCombo)
+resamples <- resamples(model_list)
+bwplot(resamples, metric="ROC")
+
+```
+*FUNCIÓN DE PREDICCIÓN*
+Finalmente, se crea una función capaz de predecir (predict_function). Su input será un data frame con variables predictoras y su output será un data frame con las 4 variables respuesta predecidas.
+
+```{r}
+predict_function <- function(dataset){
+  
+  features_test <- dataset[-1]
+  features_test <- as.data.frame(unclass(features_test), stringsAsFactors = TRUE)
+  features_test <- features_test %>% select(-c(hº.act.cerca.sem, origen.antepasados..extranjeros., hº.act.cerca.sem, Grupo.fot, fototipo, origen.antepasados..españa.))
+  NAs2 <- sapply(features_test,function(x){(sum(is.na(x))/nrow(features_test))*100})
+  var_NAs2 <- NAs2[NAs2 != 0]
+  
+  num_NAs2 <- names(which(sapply(features_test[,which(NAs2 != 0)], is.numeric)))
+  cat_NAs2 <- names(which(sapply(features_test[,which(NAs2 != 0)], is.factor)))
+  
+  # Imputar missing values para variables numéricas
+  for (vnum2 in num_NAs2){
+    features_test[[vnum2]][is.na(features_test[[vnum2]])] <- median(features_test[[vnum2]],na.rm = TRUE)
+  }
+  
+  # Añadir categoría NoData para las variables categóricas con missing values
+  for (vcat2 in cat_NAs2){
+    levels(features_test[[vcat2]]) <- c(levels(features_test[[vcat2]]), "NoData")
+    features_test[[vcat2]][which(is.na(features_test[[vcat2]]))] <- "NoData"
+  }
+  
+  numericas2<-features_test%>%
+    select_if(is.numeric)
+  
+  # Escalamos todas las variables menos Familiar.miope.num.
+  numericas2[-10] <- scale(numericas2[-10])
+  
+  # Normalidad: shapiro test para todas las variables numéricas continuas
+  norm2 <- sapply(numericas2[-c(1,10)], function(x){shapiro.test(x)$p.value})
+  # Determinamos un umbral para el p-valor, si el p-valor es mayor que 0.05 no tengo evidencias para decir que la variable no sigue una distribución normal
+  sesgadas2 <- norm2[norm2 < 0.05]
+  # Tranformamos las variables excesivamente sesgadas
+  for(n in names(sesgadas2)){
+    numericas2[[n]] <- normalize(numericas2[[n]])
+  }
+  
+  categoricas2 <- features_test %>%
+    select_if(is.factor)
+  
+  datos_juntos2 <- cbind(numericas2, categoricas2)
+  
+  # A partir de datos_juntos2 y los vectores con las variables predictoras importantes para cada variables respuesta, creamos los datasets que nos permitirán predecir cada una
+  features_test_M <- datos_juntos2[,names(datos_juntos2)%in%collist_M]
+  features_test_MM <- datos_juntos2[,names(datos_juntos2)%in%collist_MM]
+  features_test_Combo <- datos_juntos2[,names(datos_juntos2)%in%collist_Combo]
+  features_test_DCombo <- datos_juntos2[,names(datos_juntos2)%in%collist_DCombo]
+  
+  # Usamos el modelo de rf para predecir cada variable respuesta
+  yhat_M <- predict(model_rf_M, features_test_M)
+  yhat_MM <- predict(model_rf_MM, features_test_MM)
+  yhat_Combo <- predict(model_rf_Combo, features_test_Combo)
+  yhat_DCombo <- predict(model_rf_DCombo, features_test_DCombo)
+  
+  # Creamos el output dataset (4 columnas con las predicciones de cada variable respuesta)
+  prediccion_final <- data.frame("M" = yhat_M, "MM" = yhat_MM, "Combo" = yhat_Combo, "DCombo" = yhat_DCombo)
+  return(prediccion_final)
+  
+}
+
+#dataset <- read_csv("X_test.csv") # introducir aquí el archivo csv con el X_test
+#prediccion_final <- predict_function(dataset)
+
+```
+
