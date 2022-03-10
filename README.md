@@ -8,5 +8,5 @@ Se trata de 3 archivos:
 
 -clasificación_ML.2.R donde está el script realizado.
 
--clasificación_ML.2.rmd donde está el script realizado con el código en los chunks y incluimos también los comentarios.
+-clasificación_ML.2.rmd donde está el script realizado con el código en los chunks y incluimos también los comentarios, incluyendo los resultados.
 
